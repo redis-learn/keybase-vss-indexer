@@ -1,10 +1,10 @@
-# Keybase Services
+# Keybase VSS Indexer
 
-Services to operate the Redis Knowledge Base
+VSS indexer to operate the Redis Knowledge Base 
 
-## VSS
+## Instructions
 
-Browse to the `/vss` folder and use the Dockerfile to create the image:
+Use the Dockerfile to create the image:
 
 ```
 docker build -t keybase-vss:v1 .
