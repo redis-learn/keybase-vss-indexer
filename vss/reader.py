@@ -8,9 +8,8 @@ from bs4 import BeautifulSoup
 from markdown import markdown
 from sentence_transformers import SentenceTransformer
 
-# Initialization
-model = SentenceTransformer('sentence-transformers/all-distilroberta-v1')
-logging.basicConfig(filename=os.getenv('KEYBASE_VSS_LOG', './keybase-vss.log'), encoding='utf-8', level=logging.DEBUG)
+KEYBASE_STREAM_BLOCK = os.getenv('KEYBASE_STREAM_BLOCK', 10000)
+KEYBASE_VSS_LOG = os.getenv('KEYBASE_VSS_LOG', './keybase-vss.log')
 
 
 def get_db():
@@ -27,13 +26,6 @@ def get_db():
                               decode_responses=os.getenv('DB_DECODE_RESPONSE', True))
     except redis.exceptions.ConnectionError:
         logging.error("Cannot connect to Redis, retrying")
-
-
-# Create consumer group and stream altogether
-try:
-    get_db().xgroup_create("keybase:events", "vss_readers", id='$', mkstream=True)
-except redis.exceptions.ResponseError:
-    logging.debug("The consumer group likely exists")
 
 
 def process_event(message_id, pk):
@@ -63,7 +55,7 @@ def process_event(message_id, pk):
 
 def read_stream():
     # events reads as [['keybase:events', [('1681393555441-0', {'type': 'publish', 'id': 'weovoo488q'})]]]
-    ev = get_db().xreadgroup('vss_readers', 'default', {'keybase:events': '>'}, count=1, block=10000)
+    ev = get_db().xreadgroup('vss_readers', 'default', {'keybase:events': '>'}, count=1, block=KEYBASE_STREAM_BLOCK)
     if len(ev) != 0:
         logging.debug('Found event...')
         process_event(ev[0][1][0][0], ev[0][1][0][1]['id'])
@@ -74,8 +66,6 @@ def read_stream():
         if len(ev[1]) != 0:
             logging.debug("Claiming...")
             process_event(ev[1][0][0], ev[1][0][1]['id'])
-        else:
-            logging.debug('Nothing to do here...')
 
 
 def start_read_stream():
@@ -85,5 +75,15 @@ def start_read_stream():
         except redis.exceptions.ConnectionError:
             logging.error("Cannot connect to Redis, retrying in 10 seconds")
             time.sleep(10)
+
+# Initialization
+model = SentenceTransformer('sentence-transformers/all-distilroberta-v1')
+logging.basicConfig(filename=KEYBASE_VSS_LOG, encoding='utf-8', level=logging.DEBUG)
+
+# Create consumer group and stream altogether
+try:
+    get_db().xgroup_create("keybase:events", "vss_readers", id='$', mkstream=True)
+except redis.exceptions.ResponseError:
+    logging.debug("The consumer group likely exists")
 
 start_read_stream()
