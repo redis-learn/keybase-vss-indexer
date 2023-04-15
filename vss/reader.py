@@ -1,4 +1,6 @@
 import os
+import logging
+import time
 
 import numpy as np
 import redis
@@ -8,29 +10,36 @@ from sentence_transformers import SentenceTransformer
 
 # Initialization
 model = SentenceTransformer('sentence-transformers/all-distilroberta-v1')
+logging.basicConfig(filename=os.getenv('KEYBASE_VSS_LOG', './keybase-vss.log'), encoding='utf-8', level=logging.DEBUG)
 
-# Unmanaged, let's crash the service if no connection
-r = redis.StrictRedis(host=os.getenv('DB_SERVICE', '127.0.0.1'),
-                      port=int(os.getenv('DB_PORT', 6379)),
-                      password=os.getenv('DB_PWD', ''),
-                      db=0,
-                      ssl=os.getenv('DB_SSL', False),
-                      ssl_keyfile=os.getenv('DB_SSL_KEYFILE', ''),
-                      ssl_certfile=os.getenv('DB_SSL_CERTFILE', ''),
-                      ssl_ca_certs=os.getenv('DB_CA_CERTS', ''),
-                      ssl_cert_reqs=os.getenv('DB_CERT_REQS', ''),
-                      decode_responses=os.getenv('DB_DECODE_RESPONSE', True))
+
+def get_db():
+    try:
+        return redis.StrictRedis(host=os.getenv('DB_SERVICE', '127.0.0.1'),
+                              port=int(os.getenv('DB_PORT', 6379)),
+                              password=os.getenv('DB_PWD', ''),
+                              db=0,
+                              ssl=os.getenv('DB_SSL', False),
+                              ssl_keyfile=os.getenv('DB_SSL_KEYFILE', ''),
+                              ssl_certfile=os.getenv('DB_SSL_CERTFILE', ''),
+                              ssl_ca_certs=os.getenv('DB_CA_CERTS', ''),
+                              ssl_cert_reqs=os.getenv('DB_CERT_REQS', ''),
+                              decode_responses=os.getenv('DB_DECODE_RESPONSE', True))
+    except redis.exceptions.ConnectionError:
+        logging.error("Cannot connect to Redis, retrying")
+
 
 # Create consumer group and stream altogether
 try:
-    r.xgroup_create("keybase:events", "vss_readers", id='$', mkstream=True)
+    get_db().xgroup_create("keybase:events", "vss_readers", id='$', mkstream=True)
 except redis.exceptions.ResponseError:
-    print("the consumer group likely exists")
+    logging.debug("The consumer group likely exists")
 
 
 def process_event(message_id, pk):
-    print("vss processing for document " + pk)
-    document = r.json().get('keybase:json:{}'.format(pk),
+    logging.debug("VSS processing for document " + pk)
+
+    document = get_db().json().get('keybase:json:{}'.format(pk),
                             '$.currentversion',
                             '$.privacy',
                             '$.state')
@@ -47,23 +56,34 @@ def process_event(message_id, pk):
            "name": current['name'],
            "state": document['$.state'][0],
            "privacy": document['$.privacy'][0]}
-    r.hset("keybase:vss:{}".format(pk), mapping=doc)
+    get_db().hset("keybase:vss:{}".format(pk), mapping=doc)
 
-    r.xack("keybase:events", "vss_readers", message_id)
+    get_db().xack("keybase:events", "vss_readers", message_id)
 
 
-while True:
+def read_stream():
     # events reads as [['keybase:events', [('1681393555441-0', {'type': 'publish', 'id': 'weovoo488q'})]]]
-    ev = r.xreadgroup('vss_readers', 'default', {'keybase:events': '>'}, count=1, block=10000)
+    ev = get_db().xreadgroup('vss_readers', 'default', {'keybase:events': '>'}, count=1, block=10000)
     if len(ev) != 0:
-        print("found event...")
+        logging.debug('Found event...')
         process_event(ev[0][1][0][0], ev[0][1][0][1]['id'])
     else:
         # Check if there is something pending
         # claimed reads as ['1681391854729-0', [('1681391822826-0', {'type': 'publish', 'id': '1nh53wraw9'})]]
-        ev = r.xautoclaim('keybase:events', 'vss_readers', 'default', 10000, count=1, start_id='0')
+        ev = get_db().xautoclaim('keybase:events', 'vss_readers', 'default', 10000, count=1, start_id='0')
         if len(ev[1]) != 0:
-            print("claiming...")
+            logging.debug("Claiming...")
             process_event(ev[1][0][0], ev[1][0][1]['id'])
         else:
-            print("nothing to do here...")
+            logging.debug('Nothing to do here...')
+
+
+def start_read_stream():
+    while True:
+        try:
+            read_stream()
+        except redis.exceptions.ConnectionError:
+            logging.error("Cannot connect to Redis, retrying in 10 seconds")
+            time.sleep(10)
+
+start_read_stream()
