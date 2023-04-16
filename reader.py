@@ -8,7 +8,7 @@ from bs4 import BeautifulSoup
 from markdown import markdown
 from sentence_transformers import SentenceTransformer
 
-KEYBASE_STREAM_BLOCK = os.getenv('KEYBASE_STREAM_BLOCK', 10000)
+KEYBASE_STREAM_BLOCK = int(os.getenv('KEYBASE_STREAM_BLOCK', 10000))
 KEYBASE_VSS_LOG = os.getenv('KEYBASE_VSS_LOG', './keybase-vss.log')
 
 
